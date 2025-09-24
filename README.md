@@ -25,17 +25,17 @@ Timer with 5-minute increments up to 1 hour.
 - Visual countdown
 - Rapid flashing when complete
 
-### 🤖 chatgpt-local.30s.py
-Local ChatGPT integration for SwiftBar.
-
-### 🌐 chatgpt-webview.30s.py
-ChatGPT webview integration for SwiftBar.
-
 ### 🚀 wpengine-dynamic.30s.py
 WP Engine dynamic content management.
 
-### 🧪 test-webview.30s.sh
-Webview testing script for development.
+### 🤖 chatgpt-local.30s.py (Disabled)
+Local ChatGPT integration for SwiftBar - currently disabled.
+
+### 🌐 chatgpt-webview.30s.py (Disabled)
+ChatGPT webview integration for SwiftBar - currently disabled.
+
+### 🧪 test-webview.30s.sh (Disabled)
+Webview testing script for development - currently disabled.
 
 ## Installation
 
