@@ -1,0 +1,27 @@
+[
+  {
+    "tracking_number": "1Z999AA10123456784",
+    "carrier": "UPS",
+    "name": "Example UPS Package",
+    "added": "2024-01-01T00:00:00"
+  },
+  {
+    "tracking_number": "9400110200881234567890",
+    "carrier": "USPS",
+    "name": "Example USPS Package",
+    "added": "2024-01-01T00:00:00"
+  },
+  {
+    "tracking_number": "123456789012",
+    "carrier": "FedEx",
+    "name": "Example FedEx Package",
+    "added": "2024-01-01T00:00:00"
+  },
+  {
+    "tracking_number": "JD014600004000000000",
+    "carrier": "DHL",
+    "name": "Example DHL Package",
+    "added": "2024-01-01T00:00:00"
+  }
+]
+

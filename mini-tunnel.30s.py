@@ -22,41 +22,42 @@ CACHE_FILE = CACHE_DIR / "swiftbar_mini_tunnel_cache.json"
 REFRESH_INTERVAL = 30  # Refresh every 30 seconds
 
 # SSH tunnel configuration
-SSH_HOST = "mini"
 SSH_USER = os.getenv("SSH_USER", os.getenv("USER", "root"))
-TUNNELS = {
-    "3845": {
-        "remote_port": 3845,
-        "local_port": 3845,
-        "description": "Port 3845"
-    },
-    "12306": {
-        "remote_port": 12306,
-        "local_port": 12306,
-        "description": "Port 12306"
-    }
+
+# Available SSH hosts
+SSH_HOSTS = {
+    "mini": {"hostname": "mini", "display": "Mini"},
+    "pipex": {"hostname": "pipex", "display": "Pipex"}
 }
+
+# Permanent ports to tunnel (without host assignment - selected dynamically)
+PERMANENT_PORTS = ["3845", "12306", "54106", "60351", "57682"]
 
 # -----------------------------------
 # Cache Functions
 # -----------------------------------
 def load_tunnel_state():
     """Load tunnel state from cache"""
+    default_state = {
+        "tunnels": {},
+        "last_check": None,
+        "temporary_ports": []  # Track temporary ports added by user
+    }
+
     try:
         if CACHE_FILE.exists():
             with open(CACHE_FILE, 'r') as f:
-                return json.load(f)
+                state = json.load(f)
+
+                # Ensure temporary_ports exists
+                if "temporary_ports" not in state:
+                    state["temporary_ports"] = []
+
+                return state
     except Exception:
         pass
-    
-    # Default state - all tunnels stopped
-    return {
-        "tunnels": {
-            "3845": {"running": False, "pid": None, "start_time": None},
-            "12306": {"running": False, "pid": None, "start_time": None}
-        },
-        "last_check": None
-    }
+
+    return default_state
 
 def save_tunnel_state(state):
     """Save tunnel state to cache"""
@@ -66,6 +67,16 @@ def save_tunnel_state(state):
             json.dump(state, f)
     except Exception:
         pass
+
+def get_all_ports(state):
+    """Get all ports (permanent + temporary from state)"""
+    all_ports = set(PERMANENT_PORTS)
+
+    # Add any temporary ports that are in the state
+    if state and "temporary_ports" in state:
+        all_ports.update(state["temporary_ports"])
+
+    return sorted(all_ports)
 
 # -----------------------------------
 # Process Management
@@ -94,27 +105,46 @@ def kill_process(pid):
         pass
     return False
 
-def start_ssh_tunnel(port):
-    """Start SSH tunnel for the specified port"""
-    if port not in TUNNELS:
-        return False, "Invalid port"
-    
-    tunnel_config = TUNNELS[port]
-    
+def start_ssh_tunnel(port, host_key, direction="remote"):
+    """Start SSH tunnel for the specified port to the specified host
+
+    Args:
+        port: The port number to tunnel
+        host_key: The SSH host key (mini, pipex, etc.)
+        direction: "remote" for -R (expose local port on remote), "local" for -L (access remote port locally)
+    """
+    if host_key not in SSH_HOSTS:
+        return False, "Invalid host"
+
+    tunnel_key = f"{port}:{direction}@{host_key}"
+    ssh_host = SSH_HOSTS[host_key]["hostname"]
+
     # Check if tunnel is already running
-    if check_tunnel_status(port):
+    if check_tunnel_status(port, host_key, direction):
         return False, "Tunnel already running"
-    
-    # SSH command: ssh -R remote_port:127.0.0.1:local_port user@host
+
+    # Just use hostname, let SSH config determine the user
+    ssh_target = ssh_host
+
+    # SSH command varies based on direction
+    if direction == "remote":
+        # -R: Expose local port on remote host (remote can access localhost:port)
+        tunnel_arg = f"{port}:127.0.0.1:{port}"
+        tunnel_flag = "-R"
+    else:  # local
+        # -L: Access remote port locally (localhost:port accesses remote:port)
+        tunnel_arg = f"{port}:127.0.0.1:{port}"
+        tunnel_flag = "-L"
+
     cmd = [
-        "ssh", 
-        "-R", f"{tunnel_config['remote_port']}:127.0.0.1:{tunnel_config['local_port']}",
+        "ssh",
+        tunnel_flag, tunnel_arg,
         "-N",  # Don't execute remote commands
         "-f",  # Run in background
         "-o", "ConnectTimeout=10",  # Add timeout
         "-o", "ServerAliveInterval=60",  # Keep connection alive
         "-o", "ServerAliveCountMax=3",  # Max missed keepalives
-        f"{SSH_USER}@{SSH_HOST}"
+        ssh_target
     ]
     
     try:
@@ -135,36 +165,39 @@ def start_ssh_tunnel(port):
         else:
             # SSH with -f forks, so the parent process exits immediately
             # Check if there's actually a tunnel process running
-            actual_pid = find_ssh_tunnel_process(port)
+            actual_pid = find_ssh_tunnel_process(port, host_key, direction)
             if actual_pid:
                 return True, actual_pid
             else:
                 # Get error output for debugging
                 stderr_output = process.stderr.read().decode() if process.stderr else "No error output"
                 return False, f"SSH tunnel failed to start: {stderr_output}"
-            
+
     except Exception as e:
         return False, f"Error starting tunnel: {str(e)}"
 
-def stop_ssh_tunnel(port):
-    """Stop SSH tunnel for the specified port"""
+def stop_ssh_tunnel(port, host_key, direction="remote"):
+    """Stop SSH tunnel for the specified port, host, and direction"""
     state = load_tunnel_state()
-    
-    if port not in state["tunnels"]:
-        return False, "Port not found in state"
-    
-    tunnel_state = state["tunnels"][port]
+
+    tunnel_key = f"{port}:{direction}@{host_key}"
+    if tunnel_key not in state["tunnels"]:
+        return False, "Tunnel not found in state"
+
+    tunnel_state = state["tunnels"][tunnel_key]
+    ssh_host = SSH_HOSTS[host_key]["hostname"]
     stopped_any = False
-    
+
     # Kill the process we know about
     if tunnel_state["running"] and tunnel_state["pid"]:
         if kill_process(tunnel_state["pid"]):
             stopped_any = True
-    
+
     # Also kill any other SSH tunnel processes for this port
     try:
+        tunnel_flag = "-R" if direction == "remote" else "-L"
         result = subprocess.run(
-            ["pkill", "-f", f"ssh.*-R {port}:127.0.0.1:{port}.*{SSH_HOST}"],
+            ["pkill", "-f", f"ssh.*{tunnel_flag} {port}:127.0.0.1:{port}.*{ssh_host}"],
             capture_output=True,
             text=True
         )
@@ -172,28 +205,31 @@ def stop_ssh_tunnel(port):
             stopped_any = True
     except Exception:
         pass
-    
+
     # Update state
-    state["tunnels"][port]["running"] = False
-    state["tunnels"][port]["pid"] = None
-    state["tunnels"][port]["start_time"] = None
+    state["tunnels"][tunnel_key]["running"] = False
+    state["tunnels"][tunnel_key]["pid"] = None
+    state["tunnels"][tunnel_key]["start_time"] = None
     save_tunnel_state(state)
-    
+
     if stopped_any:
         return True, "Tunnel stopped"
     else:
         return True, "No tunnel was running"
 
-def find_ssh_tunnel_process(port):
-    """Find SSH tunnel process for the specified port"""
+def find_ssh_tunnel_process(port, host_key, direction="remote"):
+    """Find SSH tunnel process for the specified port, host, and direction"""
     try:
+        ssh_host = SSH_HOSTS[host_key]["hostname"]
+        tunnel_flag = "-R" if direction == "remote" else "-L"
+
         # Look for SSH processes with the specific tunnel pattern
         result = subprocess.run(
-            ["pgrep", "-f", f"ssh.*-R {port}:127.0.0.1:{port}.*{SSH_HOST}"],
+            ["pgrep", "-f", f"ssh.*{tunnel_flag} {port}:127.0.0.1:{port}.*{ssh_host}"],
             capture_output=True,
             text=True
         )
-        
+
         if result.returncode == 0 and result.stdout.strip():
             pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip()]
             return pids[0] if pids else None
@@ -201,14 +237,15 @@ def find_ssh_tunnel_process(port):
         pass
     return None
 
-def check_tunnel_status(port):
+def check_tunnel_status(port, host_key, direction="remote"):
     """Check if tunnel is actually running and update state"""
     state = load_tunnel_state()
-    
-    if port not in state["tunnels"]:
+
+    tunnel_key = f"{port}:{direction}@{host_key}"
+    if tunnel_key not in state["tunnels"]:
         return False
-    
-    tunnel_state = state["tunnels"][port]
+
+    tunnel_state = state["tunnels"][tunnel_key]
     
     # First check if we have a PID in our state
     if tunnel_state["running"] and tunnel_state["pid"]:
@@ -216,36 +253,37 @@ def check_tunnel_status(port):
             return True
         else:
             # Process died, update state
-            state["tunnels"][port]["running"] = False
-            state["tunnels"][port]["pid"] = None
-            state["tunnels"][port]["start_time"] = None
+            state["tunnels"][tunnel_key]["running"] = False
+            state["tunnels"][tunnel_key]["pid"] = None
+            state["tunnels"][tunnel_key]["start_time"] = None
             save_tunnel_state(state)
-    
+
     # If not in our state, check if there's actually a running tunnel
-    actual_pid = find_ssh_tunnel_process(port)
+    actual_pid = find_ssh_tunnel_process(port, host_key, direction)
     if actual_pid:
         # Update our state with the actual running process
-        state["tunnels"][port]["running"] = True
-        state["tunnels"][port]["pid"] = actual_pid
-        if not state["tunnels"][port]["start_time"]:
-            state["tunnels"][port]["start_time"] = datetime.now().isoformat()
+        state["tunnels"][tunnel_key]["running"] = True
+        state["tunnels"][tunnel_key]["pid"] = actual_pid
+        if not state["tunnels"][tunnel_key]["start_time"]:
+            state["tunnels"][tunnel_key]["start_time"] = datetime.now().isoformat()
         save_tunnel_state(state)
         return True
-    
+
     return False
 
-def get_tunnel_uptime(port):
+def get_tunnel_uptime(port, host_key, direction="remote"):
     """Get tunnel uptime in minutes"""
     state = load_tunnel_state()
-    
-    if port not in state["tunnels"]:
+
+    tunnel_key = f"{port}:{direction}@{host_key}"
+    if tunnel_key not in state["tunnels"]:
         return 0
-    
-    tunnel_state = state["tunnels"][port]
-    
+
+    tunnel_state = state["tunnels"][tunnel_key]
+
     if not tunnel_state["running"] or not tunnel_state["start_time"]:
         return 0
-    
+
     try:
         start_time = datetime.fromisoformat(tunnel_state["start_time"])
         uptime = datetime.now() - start_time
@@ -259,133 +297,151 @@ def get_tunnel_uptime(port):
 def render_menu():
     """Render the SwiftBar menu"""
     state = load_tunnel_state()
-    
-    # Check tunnel statuses
-    running_tunnels = 0
-    for port in TUNNELS.keys():
-        is_running = check_tunnel_status(port)
-        if is_running:
-            running_tunnels += 1
-    
-    # Main menu bar display
-    if running_tunnels == 0:
-        print("🔌 Mini Tunnel")
-    elif running_tunnels == len(TUNNELS):
-        print("🔌 Mini Tunnel ✅")
+    all_ports = get_all_ports(state)
+
+    # Count running tunnels
+    running_count = sum(1 for tunnel in state["tunnels"].values() if tunnel.get("running"))
+
+    # Main menu bar display - red if none, green with count if any
+    if running_count == 0:
+        print("🔴")
     else:
-        print(f"🔌 Mini Tunnel ({running_tunnels}/{len(TUNNELS)})")
-    
+        print(f"🟢 {running_count}")
+
     print("---")
-    
-    # Tunnel controls for each port
-    for port, config in TUNNELS.items():
-        tunnel_state = state["tunnels"][port]
-        is_running = check_tunnel_status(port)
-        
-        if is_running:
-            uptime = get_tunnel_uptime(port)
-            uptime_str = f" ({uptime}m)" if uptime > 0 else ""
-            print(f"🟢 {config['description']}{uptime_str}")
-            print(f"--Stop Tunnel | bash={sys.argv[0]} param1=stop param2={port} terminal=false refresh=true")
+
+    # Display each port with submenu for host and direction selection
+    for port in all_ports:
+        port_has_tunnel = False
+        port_tunnels = []
+
+        # Check all possible tunnel combinations for this port
+        for host_key in SSH_HOSTS.keys():
+            for direction in ["remote", "local"]:
+                tunnel_key = f"{port}:{direction}@{host_key}"
+                if tunnel_key in state["tunnels"] and state["tunnels"][tunnel_key].get("running"):
+                    port_has_tunnel = True
+                    port_tunnels.append((host_key, direction, tunnel_key))
+
+        # Port title with status
+        if port_has_tunnel:
+            print(f"🟢 Port {port}")
+            for host_key, direction, tunnel_key in port_tunnels:
+                uptime = get_tunnel_uptime(port, host_key, direction)
+                uptime_str = f" ({uptime}m)" if uptime > 0 else ""
+                dir_symbol = "→" if direction == "remote" else "←"
+                dir_label = "Remote (-R)" if direction == "remote" else "Local (-L)"
+                pid = state["tunnels"][tunnel_key].get("pid")
+                print(f"--{dir_symbol} {SSH_HOSTS[host_key]['display']} {dir_label}{uptime_str}")
+                print(f"----Stop | bash={sys.argv[0]} param1=stop param2={port} param3={host_key} param4={direction} terminal=false refresh=true")
+                if pid:
+                    print(f"----PID: {pid}")
         else:
-            print(f"🔴 {config['description']}")
-            print(f"--Start Tunnel | bash={sys.argv[0]} param1=start param2={port} terminal=false refresh=true")
-        
-        print(f"--Status: {'Running' if is_running else 'Stopped'}")
-        if is_running and tunnel_state.get("pid"):
-            print(f"--PID: {tunnel_state['pid']}")
+            print(f"🔴 Port {port}")
+            # Show menu to start tunnel
+            for host_key, host_info in SSH_HOSTS.items():
+                print(f"--{host_info['display']}")
+                print(f"----Remote (-R): Expose local → remote | bash={sys.argv[0]} param1=start param2={port} param3={host_key} param4=remote terminal=false refresh=true")
+                print(f"----Local (-L): Access remote → local | bash={sys.argv[0]} param1=start param2={port} param3={host_key} param4=local terminal=false refresh=true")
+
+        # Add option to remove temporary port
+        if port not in PERMANENT_PORTS and not port_has_tunnel:
+            print(f"--Remove Port | bash={sys.argv[0]} param1=remove_port param2={port} terminal=false refresh=true")
+
         print("---")
-    
-    # Global controls
-    if running_tunnels > 0:
-        print(f"Stop All Tunnels | bash={sys.argv[0]} param1=stop_all terminal=false refresh=true")
-        print("---")
-    
-    if running_tunnels < len(TUNNELS):
-        print(f"Start All Tunnels | bash={sys.argv[0]} param1=start_all terminal=false refresh=true")
-        print("---")
-    
+
+    # Add custom port option
+    print(f"➕ Add Custom Port | bash={sys.argv[0]} param1=add_port terminal=false refresh=false")
+    print("---")
+
     # Connection info
-    print(f"SSH Host: {SSH_USER}@{SSH_HOST}")
+    print("Available Hosts:")
+    for host_key, host_info in SSH_HOSTS.items():
+        print(f"--{host_info['display']}: {host_info['hostname']}")
+    print("---")
     print(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
 
 # -----------------------------------
 # Action Handlers
 # -----------------------------------
-def handle_start_tunnel(port):
+def handle_start_tunnel(port, host_key, direction="remote"):
     """Handle starting a tunnel"""
-    if port not in TUNNELS:
-        print(f"❌ Invalid port: {port}")
+    if host_key not in SSH_HOSTS:
+        print(f"❌ Invalid host: {host_key}")
         return
-    
+
     # Check if already running
-    if check_tunnel_status(port):
-        print(f"✅ Tunnel for port {port} is already running")
+    if check_tunnel_status(port, host_key, direction):
+        print(f"✅ Tunnel for port {port} to {host_key} is already running")
         return
-    
-    success, result = start_ssh_tunnel(port)
-    
+
+    success, result = start_ssh_tunnel(port, host_key, direction)
+
     if success:
         # Update state
         state = load_tunnel_state()
-        state["tunnels"][port]["running"] = True
-        state["tunnels"][port]["pid"] = result
-        state["tunnels"][port]["start_time"] = datetime.now().isoformat()
+        tunnel_key = f"{port}:{direction}@{host_key}"
+        state["tunnels"][tunnel_key] = {
+            "running": True,
+            "pid": result,
+            "start_time": datetime.now().isoformat()
+        }
         save_tunnel_state(state)
-        print(f"✅ Started tunnel for port {port} (PID: {result})")
+        dir_label = "Remote (-R)" if direction == "remote" else "Local (-L)"
+        print(f"✅ Started {dir_label} tunnel for port {port} to {SSH_HOSTS[host_key]['display']} (PID: {result})")
     else:
         print(f"❌ Failed to start tunnel for port {port}: {result}")
 
-def handle_stop_tunnel(port):
+def handle_stop_tunnel(port, host_key, direction="remote"):
     """Handle stopping a tunnel"""
-    if port not in TUNNELS:
-        print(f"❌ Invalid port: {port}")
+    if host_key not in SSH_HOSTS:
+        print(f"❌ Invalid host: {host_key}")
         return
-    
-    success, result = stop_ssh_tunnel(port)
-    
+
+    success, result = stop_ssh_tunnel(port, host_key, direction)
+
     if success:
-        print(f"✅ Stopped tunnel for port {port}")
+        dir_label = "Remote (-R)" if direction == "remote" else "Local (-L)"
+        print(f"✅ Stopped {dir_label} tunnel for port {port} from {SSH_HOSTS[host_key]['display']}")
     else:
         print(f"❌ Failed to stop tunnel for port {port}: {result}")
 
-def handle_start_all_tunnels():
-    """Handle starting all tunnels"""
-    results = []
-    for port in TUNNELS.keys():
-        if not check_tunnel_status(port):
-            success, result = start_ssh_tunnel(port)
-            if success:
-                # Update state
-                state = load_tunnel_state()
-                state["tunnels"][port]["running"] = True
-                state["tunnels"][port]["pid"] = result
-                state["tunnels"][port]["start_time"] = datetime.now().isoformat()
-                save_tunnel_state(state)
-                results.append(f"✅ Port {port}")
-            else:
-                results.append(f"❌ Port {port}: {result}")
-        else:
-            results.append(f"⏭️ Port {port} (already running)")
-    
-    for result in results:
-        print(result)
+def handle_add_port():
+    """Handle adding a custom port"""
+    import subprocess
+    result = subprocess.run(
+        ["osascript", "-e", 'display dialog "Enter port number:" default answer ""'],
+        capture_output=True,
+        text=True
+    )
 
-def handle_stop_all_tunnels():
-    """Handle stopping all tunnels"""
-    results = []
-    for port in TUNNELS.keys():
-        if check_tunnel_status(port):
-            success, result = stop_ssh_tunnel(port)
-            if success:
-                results.append(f"✅ Port {port}")
+    if result.returncode == 0:
+        # Extract port from osascript output
+        output = result.stdout.strip()
+        if "button returned:OK, text returned:" in output:
+            port = output.split("text returned:")[1].strip()
+            if port.isdigit():
+                state = load_tunnel_state()
+                if port not in state["temporary_ports"]:
+                    state["temporary_ports"].append(port)
+                    save_tunnel_state(state)
+                    print(f"✅ Added port {port}")
+                else:
+                    print(f"ℹ️ Port {port} already exists")
             else:
-                results.append(f"❌ Port {port}: {result}")
-        else:
-            results.append(f"⏭️ Port {port} (not running)")
-    
-    for result in results:
-        print(result)
+                print("❌ Invalid port number")
+    else:
+        print("❌ Cancelled")
+
+def handle_remove_port(port):
+    """Handle removing a temporary port"""
+    state = load_tunnel_state()
+    if port in state.get("temporary_ports", []):
+        state["temporary_ports"].remove(port)
+        save_tunnel_state(state)
+        print(f"✅ Removed port {port}")
+    else:
+        print(f"❌ Port {port} not found in temporary ports")
 
 # -----------------------------------
 # Main Execution
@@ -394,15 +450,15 @@ if __name__ == "__main__":
     # Handle command line arguments
     if len(sys.argv) > 1:
         command = sys.argv[1]
-        
-        if command == "start" and len(sys.argv) > 2:
-            handle_start_tunnel(sys.argv[2])
-        elif command == "stop" and len(sys.argv) > 2:
-            handle_stop_tunnel(sys.argv[2])
-        elif command == "start_all":
-            handle_start_all_tunnels()
-        elif command == "stop_all":
-            handle_stop_all_tunnels()
+
+        if command == "start" and len(sys.argv) > 4:
+            handle_start_tunnel(sys.argv[2], sys.argv[3], sys.argv[4])
+        elif command == "stop" and len(sys.argv) > 4:
+            handle_stop_tunnel(sys.argv[2], sys.argv[3], sys.argv[4])
+        elif command == "add_port":
+            handle_add_port()
+        elif command == "remove_port" and len(sys.argv) > 2:
+            handle_remove_port(sys.argv[2])
         else:
             print("❌ Invalid command")
     else:

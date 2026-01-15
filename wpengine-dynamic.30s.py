@@ -566,7 +566,7 @@ def render_title(cache):
     count = len(cache.get("installs", []))
     print(f"DEBUG: render_title called with {count} installs in cache", file=sys.stderr)
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wpe-icon.png")
-    print(f"{count} | image={icon_path}")
+    print(f"WPE | image={icon_path}")
 
 def render_menu():
     cache = load_cache()
@@ -1035,7 +1035,7 @@ if __name__ == "__main__":
     else:
         print(f"DEBUG REFRESH: Using cached data", file=sys.stderr)
     # top level menu
-    print(f"WPE {len(cache.get('installs', []))}")
+    print("WPE")
     print("---")
 
     # Add MainWP link if configured

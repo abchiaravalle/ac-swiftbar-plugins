@@ -136,6 +136,52 @@ A comprehensive WordPress hosting management tool that interfaces with the WP En
 - `WPE_MAX_INSTALLS`: Maximum installs to display (default: 100)
 - `REFRESH_SECS`: Cache refresh interval (default: 300 seconds)
 
+### 📦 package-tracker.5m.py
+**Multi-Carrier Package Tracking System**
+
+A comprehensive package tracking solution that monitors shipments from UPS, USPS, FedEx, and DHL, displaying real-time status, location, and delivery information directly in your macOS menu bar.
+
+**How it works:**
+- **Automatic Carrier Detection**: Uses regex patterns to identify carriers based on tracking number format
+- **Web Scraping Integration**: Fetches tracking information by scraping carrier websites
+- **Intelligent Caching**: 5-minute cache system to reduce API calls and improve performance
+- **Multi-Carrier Support**: Handles UPS, USPS, FedEx, and DHL tracking numbers
+- **Real-Time Updates**: Refreshes every 5 minutes with automatic status monitoring
+
+**Core Functionality:**
+- **Tracking Number Management**: Add/remove tracking numbers through intuitive menu interface
+- **Status Monitoring**: Real-time package status with color-coded indicators
+- **Location Tracking**: Current package location display
+- **Delivery Information**: Expected or actual delivery dates
+- **Error Handling**: Graceful handling of network issues and invalid tracking numbers
+
+**Supported Carriers:**
+- **UPS**: 1Z format, T format tracking numbers
+- **USPS**: 20-22 digit, XX+9+US format, 13-15 digit numbers
+- **FedEx**: 12, 14, 15, 20, 22 digit tracking numbers
+- **DHL**: 9-12 digit, JD+18 digit format numbers
+
+**Status Indicators:**
+- ✅ Delivered (Green)
+- 🚚 In Transit (Blue)
+- 🚛 Out for Delivery (Orange)
+- ⚠️ Exception (Red)
+- ⏳ Pending (Yellow)
+- ❓ Unknown (Gray)
+
+**Menu Interface:**
+- Main bar shows package count with status summary
+- Individual package details with status, location, and delivery date
+- Add/remove tracking numbers through dialog interface
+- Clear all packages functionality
+- Real-time timestamp display
+
+**Configuration:**
+- Automatic carrier detection based on tracking number format
+- Persistent storage of tracking numbers in JSON format
+- Cache management for optimal performance
+- Debug mode for troubleshooting
+
 ## Disabled Plugins
 
 ### 🤖 chatgpt-local.30s.py (Disabled)
@@ -171,8 +217,9 @@ HC911_MAX_CALLS=150
 
 - Python 3
 - SwiftBar
-- SSH access to configured hosts
+- SSH access to configured hosts (for tunnel and WP Engine plugins)
 - Internet connection for API-based plugins
+- Python packages: `requests`, `beautifulsoup4` (for package tracker)
 
 ## License
 
